@@ -196,8 +196,12 @@ def route():
 
 
 @app.get("/v1/admin/clean-boundaries", dependencies=[Depends(auth)])
-def clean_boundaries(dry_run: int = Query(1)):
-    """Rimuove i tratti fuori da Piemonte/Liguria. dry_run=1 solo anteprima."""
+def clean_boundaries(dry_run: int = Query(1), buffer_km: float = Query(20)):
+    """Rimuove i tratti oltre `buffer_km` dai confini di Piemonte/Liguria.
+
+    Mantiene la fascia transfrontaliera (es. 20 km, lato Francia) cosi i percorsi
+    di confine non vengono persi. dry_run=1 = solo anteprima.
+    """
     import json as _json
     import urllib.request as _url
     src = os.environ.get(
@@ -221,22 +225,32 @@ def clean_boundaries(dry_run: int = Query(1)):
                 "INSERT INTO keep_region(geom) VALUES (ST_SetSRID(ST_GeomFromGeoJSON(%s),4326));",
                 (g,),
             )
+        # Regione + fascia buffer (in metri) come unica geometria, indicizzata.
+        cur.execute(
+            "CREATE TEMP TABLE keep_buf AS "
+            "SELECT ST_Buffer(ST_Union(geom)::geography, %s)::geometry AS geom FROM keep_region;",
+            (buffer_km * 1000.0,),
+        )
+        cur.execute("CREATE INDEX ON keep_buf USING GIST (geom);")
         cur.execute("SELECT count(*) AS c FROM offroad_segments;")
         before = cur.fetchone()["c"]
         cur.execute(
             "SELECT count(*) AS c FROM offroad_segments s "
-            "WHERE NOT EXISTS (SELECT 1 FROM keep_region k WHERE ST_Intersects(s.geom, k.geom));"
+            "WHERE NOT EXISTS (SELECT 1 FROM keep_buf k WHERE ST_Intersects(s.geom, k.geom));"
         )
         out = cur.fetchone()["c"]
         deleted = 0
         if not dry_run:
             cur.execute(
                 "DELETE FROM offroad_segments s "
-                "WHERE NOT EXISTS (SELECT 1 FROM keep_region k WHERE ST_Intersects(s.geom, k.geom));"
+                "WHERE NOT EXISTS (SELECT 1 FROM keep_buf k WHERE ST_Intersects(s.geom, k.geom));"
             )
             deleted = cur.rowcount
             conn.commit()
-    return {"total": before, "out_of_region": out, "deleted": deleted, "dry_run": bool(dry_run)}
+    return {
+        "total": before, "out_of_buffer": out, "deleted": deleted,
+        "buffer_km": buffer_km, "dry_run": bool(dry_run),
+    }
 
 
 def _to_gpx(row: dict) -> str:
