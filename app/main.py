@@ -32,6 +32,65 @@ DIFFICULTY_ORDER = ["facile", "medio", "impegnativo", "solo_4x4"]
 
 app = FastAPI(title="Campera Offroad Service", version="0.1.0")
 
+_SCHEMA_SQL = """
+CREATE EXTENSION IF NOT EXISTS postgis;
+CREATE TABLE IF NOT EXISTS offroad_segments (
+    id TEXT PRIMARY KEY, name TEXT, difficulty TEXT NOT NULL, surface TEXT,
+    tracktype TEXT, smoothness TEXT, requires_4wd BOOLEAN NOT NULL DEFAULT FALSE,
+    suitable_for TEXT[] NOT NULL DEFAULT '{}', vehicle_max_width_m NUMERIC,
+    vehicle_max_weight_t NUMERIC, vehicle_max_height_m NUMERIC, length_m NUMERIC,
+    confidence TEXT NOT NULL DEFAULT 'media', warning TEXT,
+    geom GEOMETRY(LineString, 4326) NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_offroad_segments_geom ON offroad_segments USING GIST (geom);
+CREATE INDEX IF NOT EXISTS idx_offroad_segments_diff ON offroad_segments (difficulty);
+"""
+
+_INSERT_SQL = """
+INSERT INTO offroad_segments
+  (id, name, difficulty, surface, tracktype, requires_4wd, suitable_for,
+   length_m, confidence, warning, geom)
+VALUES
+  (%(id)s, %(name)s, %(difficulty)s, %(surface)s, %(tracktype)s, %(requires_4wd)s,
+   %(suitable_for)s, %(length_m)s, %(confidence)s, %(warning)s,
+   ST_SetSRID(ST_GeomFromGeoJSON(%(geom)s), 4326))
+ON CONFLICT (id) DO NOTHING;
+"""
+
+
+@app.on_event("startup")
+def _startup_seed():
+    """Crea lo schema e, se il DB e vuoto, carica i dati pilota inclusi (seed_pilot.geojson)."""
+    import json
+    try:
+        with db() as conn:
+            conn.execute(_SCHEMA_SQL)
+            with conn.cursor() as cur:
+                cur.execute("SELECT count(*) AS c FROM offroad_segments")
+                count = cur.fetchone()["c"]
+            if count == 0:
+                path = os.path.join(os.path.dirname(__file__), "seed_pilot.geojson")
+                if os.path.exists(path):
+                    fc = json.load(open(path, encoding="utf-8"))
+                    with conn.cursor() as cur:
+                        for f in fc["features"]:
+                            p = f["properties"]
+                            cur.execute(_INSERT_SQL, {
+                                "id": p["id"], "name": p.get("name"),
+                                "difficulty": p["difficulty"], "surface": p.get("surface"),
+                                "tracktype": p.get("tracktype"),
+                                "requires_4wd": p.get("requires_4wd", False),
+                                "suitable_for": p.get("suitable_for", []),
+                                "length_m": p.get("length_m"),
+                                "confidence": p.get("confidence", "media"),
+                                "warning": p.get("warning"),
+                                "geom": json.dumps(f["geometry"]),
+                            })
+                    print(f"[seed] caricati {len(fc['features'])} tratti pilota")
+            conn.commit()
+    except Exception as e:  # non bloccare l'avvio per errori di seed
+        print("[seed] errore:", e)
+
 
 def auth(x_api_key: str = Header(default="")) -> None:
     if x_api_key != API_KEY:
