@@ -102,12 +102,14 @@ def db():
 
 
 def _feature(row: dict) -> dict:
-    geom = row.pop("geometry")
     import json
+    from decimal import Decimal
+    geom = row.pop("geometry")
+    props = {k: (float(v) if isinstance(v, Decimal) else v) for k, v in row.items()}
     return {
         "type": "Feature",
         "geometry": json.loads(geom) if geom else None,
-        "properties": row,
+        "properties": props,
     }
 
 
