@@ -195,6 +195,50 @@ def route():
     raise HTTPException(501, "Routing non ancora disponibile (fase 2)")
 
 
+@app.get("/v1/admin/clean-boundaries", dependencies=[Depends(auth)])
+def clean_boundaries(dry_run: int = Query(1)):
+    """Rimuove i tratti fuori da Piemonte/Liguria. dry_run=1 solo anteprima."""
+    import json as _json
+    import urllib.request as _url
+    src = os.environ.get(
+        "REGIONS_GEOJSON_URL",
+        "https://raw.githubusercontent.com/openpolis/geojson-italy/master/geojson/limits_IT_regions.geojson",
+    )
+    keep = {"piemonte", "liguria"}
+    req = _url.Request(src, headers={"User-Agent": "CamperaOffroad/0.1"})
+    fc = _json.loads(_url.urlopen(req, timeout=60).read())
+    geoms = [
+        _json.dumps(f["geometry"])
+        for f in fc["features"]
+        if (f.get("properties", {}).get("reg_name", "") or "").strip().lower() in keep
+    ]
+    if not geoms:
+        raise HTTPException(500, "Confini regionali non trovati")
+    with db() as conn, conn.cursor() as cur:
+        cur.execute("CREATE TEMP TABLE keep_region (geom geometry);")
+        for g in geoms:
+            cur.execute(
+                "INSERT INTO keep_region(geom) VALUES (ST_SetSRID(ST_GeomFromGeoJSON(%s),4326));",
+                (g,),
+            )
+        cur.execute("SELECT count(*) AS c FROM offroad_segments;")
+        before = cur.fetchone()["c"]
+        cur.execute(
+            "SELECT count(*) AS c FROM offroad_segments s "
+            "WHERE NOT EXISTS (SELECT 1 FROM keep_region k WHERE ST_Intersects(s.geom, k.geom));"
+        )
+        out = cur.fetchone()["c"]
+        deleted = 0
+        if not dry_run:
+            cur.execute(
+                "DELETE FROM offroad_segments s "
+                "WHERE NOT EXISTS (SELECT 1 FROM keep_region k WHERE ST_Intersects(s.geom, k.geom));"
+            )
+            deleted = cur.rowcount
+            conn.commit()
+    return {"total": before, "out_of_region": out, "deleted": deleted, "dry_run": bool(dry_run)}
+
+
 def _to_gpx(row: dict) -> str:
     import json
     coords = json.loads(row["geometry"])["coordinates"]
