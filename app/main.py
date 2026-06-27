@@ -13,6 +13,7 @@ import psycopg
 from psycopg.rows import dict_row
 from fastapi import FastAPI, Depends, Header, HTTPException, Query, Response
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 API_KEY = os.environ.get("API_KEY", "dev")
 
@@ -31,6 +32,14 @@ else:
 DIFFICULTY_ORDER = ["facile", "medio", "impegnativo", "solo_4x4"]
 
 app = FastAPI(title="Campera Offroad Service", version="0.1.0")
+
+# Permette le chiamate dal browser (Campera Trail Planner e altri front-end).
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 _SCHEMA_SQL = """
 CREATE EXTENSION IF NOT EXISTS postgis;
