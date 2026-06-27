@@ -1,0 +1,9 @@
+# Segreti e ambiente
+.env
+
+# File temporanei import OSM
+import/work/
+
+# Python
+__pycache__/
+*.pyc
