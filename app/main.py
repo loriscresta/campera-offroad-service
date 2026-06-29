@@ -11,9 +11,12 @@ from typing import Optional
 
 import psycopg
 from psycopg.rows import dict_row
-from fastapi import FastAPI, Depends, Header, HTTPException, Query, Response
+from fastapi import FastAPI, Depends, Header, HTTPException, Query, Response, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+
+import routing
 
 API_KEY = os.environ.get("API_KEY", "dev")
 
@@ -189,10 +192,73 @@ def segment(seg_id: str, format: str = Query("json", pattern="^(json|gpx)$")):
     return _feature(row)
 
 
+class RouteRequest(BaseModel):
+    start: list[float] = Field(..., description="[lon, lat] partenza")
+    end: list[float] = Field(..., description="[lon, lat] arrivo")
+    waypoints: list[list[float]] = Field(default_factory=list, description="[[lon,lat],...] intermedi")
+    vehicle: str = Field("van", description="van | camper_4x4")
+    format: str = Field("gpx", pattern="^(gpx|json)$")
+
+
 @app.post("/v1/route", dependencies=[Depends(auth)])
-def route():
-    # Fase 2: integrazione GraphHopper con profili van / camper_4x4.
-    raise HTTPException(501, "Routing non ancora disponibile (fase 2)")
+def route(req: RouteRequest):
+    """Percorso A -> waypoint -> B che unisce piu tratti, passando da asfalto.
+
+    Profilo di costo per veicolo: 'van'/'camper' evita pendenze forti e solo-4x4;
+    'camper_4x4' cerca lo sterrato tecnico. Output GPX o GeoJSON + riepilogo.
+    Pilota: attivo solo dove e caricato il grafo (area Sassello); altrove 501.
+    """
+    try:
+        g = routing.get_graph()
+    except FileNotFoundError:
+        raise HTTPException(501, "Routing non disponibile: grafo non caricato (fase pilota)")
+    for p in [req.start, req.end, *req.waypoints]:
+        if not (isinstance(p, list) and len(p) == 2):
+            raise HTTPException(400, "Punti non validi: usa [lon, lat]")
+    profile = routing.vehicle_to_profile(req.vehicle)
+    points = [req.start, *req.waypoints, req.end]
+    res = g.route(points, profile)
+    if res is None:
+        raise HTTPException(422, "Nessun percorso trovato tra i punti indicati")
+    if req.format == "gpx":
+        return Response(routing.to_gpx(res["coords"], f"Campera {req.vehicle}"),
+                        media_type="application/gpx+xml")
+    return {
+        "summary": res["summary"],
+        "profile": profile,
+        "geometry": {"type": "LineString", "coordinates": res["coords"]},
+    }
+
+
+@app.post("/v1/admin/load-graph", dependencies=[Depends(auth)])
+async def load_graph(request: Request, gzipped: int = Query(0)):
+    """Carica una volta l'artefatto del grafo sul volume (es. /data).
+
+    Body = file del grafo (JSON, eventualmente gzip con ?gzipped=1). Dopo questa
+    chiamata `/v1/route` diventa attivo. Il grafo NON e in git: si carica qui.
+    """
+    raw = await request.body()
+    if not raw:
+        raise HTTPException(400, "Body vuoto: invia il file del grafo")
+    try:
+        g = routing.save_graph(raw, gzipped=bool(gzipped))
+    except Exception as e:
+        raise HTTPException(400, f"Grafo non valido: {e}")
+    return {"loaded": True, "path": routing.graph_path(), "meta": g.meta}
+
+
+@app.get("/v1/route/status", dependencies=[Depends(auth)])
+def route_status():
+    """Dice se il routing e attivo (grafo caricato) e su quale area."""
+    import os as _os
+    p = routing.graph_path()
+    if not _os.path.exists(p):
+        return {"active": False, "graph_path": p}
+    try:
+        g = routing.get_graph()
+        return {"active": True, "graph_path": p, "meta": g.meta}
+    except Exception as e:
+        return {"active": False, "graph_path": p, "error": str(e)}
 
 
 @app.get("/v1/admin/clean-boundaries", dependencies=[Depends(auth)])
