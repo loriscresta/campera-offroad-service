@@ -1,0 +1,7 @@
+=== UPLOAD === 
+{"loaded":true,"path":"/data/sassello_graph.json","meta":{"area":"Sassello (SV)","crs":"EPSG:4326","elev":"eudem25m-25m","nodes":13546,"edges":15097}}
+HTTP_UPLOAD=200
+ 
+=== STATUS === 
+{"active":true,"graph_path":"/data/sassello_graph.json","meta":{"area":"Sassello (SV)","crs":"EPSG:4326","elev":"eudem25m-25m","nodes":13546,"edges":15097}}
+HTTP_STATUS=200

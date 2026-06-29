@@ -124,9 +124,13 @@ class RoutingGraph:
             e = self.edges[ei]
             a = path_nodes[k]
             cs = e[6]
-            # orienta la geometria nel verso di marcia
-            an = self.nodes[e[0]]
-            if not (abs(an[0]-self.nodes[a][0]) < 1e-9 and abs(an[1]-self.nodes[a][1]) < 1e-9):
+            # orienta la geometria per prossimita al nodo di partenza: robusto
+            # all'ordine dei nodi di networkx (non orientato), che puo' essere
+            # invertito rispetto alla geometria e creare salti rettilinei.
+            na = self.nodes[a]
+            d0 = (cs[0][0]-na[0])**2 + (cs[0][1]-na[1])**2
+            d1 = (cs[-1][0]-na[0])**2 + (cs[-1][1]-na[1])**2
+            if d1 < d0:
                 cs = cs[::-1]
             if coords and coords[-1] == cs[0]:
                 coords.extend(cs[1:])
